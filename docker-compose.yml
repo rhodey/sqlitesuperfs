@@ -1,0 +1,15 @@
+services:
+  psql:
+    image: postgres:16-alpine
+    container_name: psql
+    ports:
+      - 5432:5432
+    volumes:
+      - psql:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=psql
+      - POSTGRES_PASSWORD=psql
+      - POSTGRES_DATABASE=psql
+
+volumes:
+  psql:

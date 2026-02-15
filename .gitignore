@@ -1,0 +1,6 @@
+.env*
+*\.swp
+target/
+node_modules/
+testdir/
+.DS_Store

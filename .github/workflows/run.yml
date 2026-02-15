@@ -1,0 +1,61 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup fuse
+        run: |
+          sudo apt install -y fuse libfuse-dev
+          sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
+
+      - name: Setup rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Setup postgres
+        run: docker compose up -d psql
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.11.0'
+          cache: 'npm'
+
+      - name: Build rust
+        run: cargo build
+
+      - name: Test TTL 0
+        run: |
+          mkdir -p ./testdir
+          export psql_url=postgresql://psql:psql@localhost:5432/psql
+          export encryption_pass=supersuper
+          RUST_LOG=info cargo run -- -o 'allow_other' --ttl 0 test1 $(pwd)/testdir &
+          sleep 5
+          npm install
+          npm run test
+          umount $(pwd)/testdir
+
+      - name: Test TTL 180
+        run: |
+          export psql_url=postgresql://psql:psql@localhost:5432/psql
+          export encryption_pass=supersuper
+          RUST_LOG=info cargo run -- -o 'allow_other' --ttl 180 test1 $(pwd)/testdir &
+          sleep 5
+          npm run test
+          umount $(pwd)/testdir
+
+      - name: Test umount
+        run: |
+          npm run test-umount

@@ -1,0 +1,24 @@
+[package]
+name = "sqlitesuperfs"
+authors = ["rhodey <mike@rhodey.org>"]
+version = "0.3.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sqlitesuperfs"
+path = "src/main.rs"
+
+[dependencies]
+fuse = "0.3.1"
+postgres = "0.19.12"
+libsodium-rs = "0.2.2"
+clap = "4.5.51"
+ctrlc = "3.5.1"
+libc = "0.2.158"
+time = "0.1.39"
+base64 = "0.22"
+log = "0.4.28"
+env_logger = "0.11.8"
+thiserror = "2.0.17"
+anyhow = "1.0.100"
