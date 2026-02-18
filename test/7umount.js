@@ -128,11 +128,11 @@ async function testInsert(t, mode, sig) {
   t.end()
 }
 
-test('test insert DELETE SIGINT', (t) => testInsert(t, 'DELETE', 'SIGINT'))
-test('test insert TRUNCATE SIGINT', (t) => testInsert(t, 'TRUNCATE', 'SIGINT'))
+test('insert DELETE SIGINT', (t) => testInsert(t, 'DELETE', 'SIGINT'))
+test('insert TRUNCATE SIGINT', (t) => testInsert(t, 'TRUNCATE', 'SIGINT'))
 
-test('test insert DELETE SIGTERM', (t) => testInsert(t, 'DELETE', 'SIGTERM'))
-test('test insert TRUNCATE SIGTERM', (t) => testInsert(t, 'TRUNCATE', 'SIGTERM'))
+test('insert DELETE SIGTERM', (t) => testInsert(t, 'DELETE', 'SIGTERM'))
+test('insert TRUNCATE SIGTERM', (t) => testInsert(t, 'TRUNCATE', 'SIGTERM'))
 
 async function testUpdate(t, mode, sig) {
   let ended = false
@@ -198,8 +198,13 @@ async function testUpdate(t, mode, sig) {
   t.end()
 }
 
-test('test update DELETE SIGINT', (t) => testUpdate(t, 'DELETE', 'SIGINT'))
-test('test update TRUNCATE SIGINT', (t) => testUpdate(t, 'TRUNCATE', 'SIGINT'))
+test('update DELETE SIGINT', (t) => testUpdate(t, 'DELETE', 'SIGINT'))
+test('update TRUNCATE SIGINT', (t) => testUpdate(t, 'TRUNCATE', 'SIGINT'))
 
-test('test update DELETE SIGTERM', (t) => testUpdate(t, 'DELETE', 'SIGTERM'))
-test('test update TRUNCATE SIGTERM', (t) => testUpdate(t, 'TRUNCATE', 'SIGTERM'))
+test('update DELETE SIGTERM', (t) => testUpdate(t, 'DELETE', 'SIGTERM'))
+test('update TRUNCATE SIGTERM', (t) => testUpdate(t, 'TRUNCATE', 'SIGTERM'))
+
+test('reset', async (t) => {
+  await reset()
+  t.pass('reset ok')
+})

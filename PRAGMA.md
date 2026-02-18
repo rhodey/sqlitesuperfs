@@ -7,7 +7,7 @@ All journal_modes are supported by SQLitesuperfs but only 2 are recommended. SQL
 DELETE is the SQLite default and it works fine.
 
 ## Journal_mode = TRUNCATE
-TRUNCATE is at this time the SQLitesuperfs recommendation. It only runs maybe 5% faster than DELETE but it results in less dead tuples for the PSQL server. So it is better for the health of the server.
+TRUNCATE is at this time the SQLitesuperfs recommendation. It runs faster than DELETE and it results in less dead tuples.
 
 ## Journal_mode = WAL
 Everyone wants to know about WAL. WAL is the crowd favorite and on a normal FS it is the best journal_mode. Many people think only WAL allows multi-reader but DELETE and TRUNCATE allow multi-reader also. The main advantage of WAL is that readers never block writes. With DELETE and TRUNCATE an INSERT *may* block waiting for a SELECT to complete. The SQLite locking protocol is actually very good and so there is only a small window in which for this to happen but it can happen.
