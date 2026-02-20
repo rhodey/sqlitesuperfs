@@ -216,6 +216,8 @@ const toObj = (buf) => {
   return JSON.parse(buf.toString('utf8'))
 }
 
+const noop = () => {}
+
 async function testRaft(t, sig) {
   let ended = false
   const errCb = (err) => {
@@ -264,7 +266,7 @@ async function testRaft(t, sig) {
   t.deepEqual(toObj(log.head), data, 'head = data')
   await log.close()
 
-  // open, close same
+  // open same
   await log.open()
   t.equal(log.seq, 2n, 'seq = 2 again')
   t.deepEqual(toObj(log.head), data, 'head = data again')
@@ -281,6 +283,7 @@ async function testRaft(t, sig) {
   child = await mount(errCb)
   t.pass('mount again ok')
 
+  // new
   log = new FsLog(`${DIR}/`, 'raft')
   await log.open()
   t.pass('open again ok')
@@ -300,6 +303,89 @@ async function testRaft(t, sig) {
 
 test('raft SIGINT', (t) => testRaft(t, 'SIGINT'))
 test('raft SIGTERM', (t) => testRaft(t, 'SIGTERM'))
+
+async function testRaftTxn(t, sig) {
+  let ended = false
+  const errCb = (err) => {
+    if (ended) { return }
+    t.fail(err.message)
+  }
+
+  await reset()
+  t.pass('reset ok')
+
+  let child = await mount(errCb)
+  t.pass('mount ok')
+
+  const kill = () => {
+    ended = true
+    child.once('exit', (code) => console.log('ssfs >> exit', code))
+    child.kill(sig)
+    return sleep(500)
+  }
+
+  t.teardown(kill)
+
+  let log = new FsLog(`${DIR}/`, 'raft')
+  await log.open()
+  t.pass('open ok')
+  t.equal(log.seq, -1n, 'seq = -1')
+  t.equal(log.head, null, 'head = null')
+
+  // commit
+  let data = { a: 1 }
+  let txn = await log.txn()
+  let seq = await txn.append(toBuf(data))
+  t.equal(seq, 0n, 'seq = 0')
+  t.equal(log.seq, 0n, 'seq = 0')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  await txn.commit()
+  t.pass('commit ok')
+  t.equal(log.seq, 0n, 'seq = 0')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  // rolled back
+  data = { b: 2 }
+  txn = await log.txn()
+  seq = await txn.append(toBuf(data))
+  t.equal(seq, 1n, 'seq = 1')
+  t.equal(log.seq, 1n, 'seq = 1')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  await kill()
+  await umount()
+  ended = false
+  child = await mount(errCb)
+  t.pass('mount again ok')
+
+  // rolled back
+  log = new FsLog(`${DIR}/`, 'raft')
+  await log.open()
+  t.pass('open again ok')
+  t.equal(log.seq, 0n, 'seq = 0 again')
+  t.deepEqual(toObj(log.head), { a: 1 }, 'head = data')
+
+  await log.close()
+  t.pass('close ok')
+  await log.open()
+  t.pass('open again again ok')
+  t.equal(log.seq, 0n, 'seq = 0 again')
+  t.deepEqual(toObj(log.head), { a: 1 }, 'head = data')
+
+  await log.close()
+  t.pass('close again ok')
+  t.end()
+}
+
+test('raft SIGINT txn', (t) => testRaftTxn(t, 'SIGINT'))
+test('raft SIGTERM txn', (t) => testRaftTxn(t, 'SIGTERM'))
+
+process.on('uncaughtException', (err) => {
+  if (err.message && err.message.includes('Closing file descriptor')) { return }
+  console.log('Uncaught exception:', err)
+  process.exit(1)
+})
 
 test('reset', async (t) => {
   await reset()
