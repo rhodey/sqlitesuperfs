@@ -111,6 +111,7 @@ test('raft append one, close, open, append', async (t) => {
 })
 
 test('raft rollback first', async (t) => {
+  empty(DIR)
   const rollbackCb = (seq) => {
     if (seq === 0n) { throw new Error('test roll') }
   }
@@ -139,6 +140,7 @@ test('raft rollback first', async (t) => {
 })
 
 test('raft rollback second', async (t) => {
+  empty(DIR)
   const rollbackCb = (seq) => {
     if (seq === 1n) { throw new Error('test roll') }
   }
@@ -168,5 +170,42 @@ test('raft rollback second', async (t) => {
   t.pass('restart ok')
   t.equal(log.seq, 0n, 'seq = 0 again')
   t.deepEqual(toObj(log.head), data, 'head = data again')
+  t.end()
+})
+
+test('raft txn', async (t) => {
+  empty(DIR)
+  const log = new FsLog(`${DIR}/`, 'test')
+  t.teardown(() => log.close())
+
+  await log.del()
+  await log.open()
+
+  t.equal(log.seq, -1n, 'seq = -1')
+  t.equal(log.head, null, 'head = null')
+
+  let data = { a: 1 }
+  let txn = await log.txn()
+  let seq = await txn.append(toBuf(data))
+  t.equal(seq, 0n, 'seq = 0')
+  t.equal(log.seq, 0n, 'seq = 0')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  await txn.commit()
+  t.pass('commit ok')
+  t.equal(log.seq, 0n, 'seq = 0')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  data = { b: 2 }
+  txn = await log.txn()
+  seq = await txn.append(toBuf(data))
+  t.equal(seq, 1n, 'seq = 1')
+  t.equal(log.seq, 1n, 'seq = 1')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  await txn.abort()
+  t.pass('abort ok')
+  t.equal(log.seq, 0n, 'seq = 0')
+  t.deepEqual(toObj(log.head), { a: 1 }, 'head = data')
   t.end()
 })

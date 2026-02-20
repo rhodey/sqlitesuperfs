@@ -1,6 +1,7 @@
 const test = require('tape')
 const split = require('split')
 const Database = require('better-sqlite3')
+const { FsLog } = require('tinyraftplus')
 const exec = require('child_process').exec
 const spawn = require('child_process').spawn
 
@@ -203,6 +204,102 @@ test('update TRUNCATE SIGINT', (t) => testUpdate(t, 'TRUNCATE', 'SIGINT'))
 
 test('update DELETE SIGTERM', (t) => testUpdate(t, 'DELETE', 'SIGTERM'))
 test('update TRUNCATE SIGTERM', (t) => testUpdate(t, 'TRUNCATE', 'SIGTERM'))
+
+const toBuf = (obj) => {
+  if (obj === null) { return null }
+  obj = JSON.stringify(obj)
+  return Buffer.from(obj, 'utf8')
+}
+
+const toObj = (buf) => {
+  if (buf === null) { return null }
+  return JSON.parse(buf.toString('utf8'))
+}
+
+async function testRaft(t, sig) {
+  let ended = false
+  const errCb = (err) => {
+    if (ended) { return }
+    t.fail(err.message)
+  }
+
+  await reset()
+  t.pass('reset ok')
+
+  let child = await mount(errCb)
+  t.pass('mount ok')
+
+  const kill = () => {
+    ended = true
+    child.once('exit', (code) => console.log('ssfs >> exit', code))
+    child.kill(sig)
+    return sleep(500)
+  }
+
+  t.teardown(kill)
+
+  // open, close same
+  let log = new FsLog(`${DIR}/`, 'raft')
+  await log.open()
+  t.pass('open ok')
+  t.equal(log.seq, -1n, 'seq = -1')
+  t.equal(log.head, null, 'head = null')
+
+  let data = { a: 1 }
+  let seq = await log.append(toBuf(data))
+  t.equal(seq, 0n, 'seq = 0')
+  t.equal(log.seq, 0n, 'seq = 0')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  data = { bb: 2 }
+  seq = await log.append(toBuf(data))
+  t.equal(seq, 1n, 'seq = 1')
+  t.equal(log.seq, 1n, 'seq = 1')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  data = { ccc: 3 }
+  seq = await log.append(toBuf(data))
+  t.equal(seq, 2n, 'seq = 2')
+  t.equal(log.seq, 2n, 'seq = 2')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+  await log.close()
+
+  // open, close same
+  await log.open()
+  t.equal(log.seq, 2n, 'seq = 2 again')
+  t.deepEqual(toObj(log.head), data, 'head = data again')
+
+  data = { d: 4 }
+  seq = await log.append(toBuf(data))
+  t.equal(seq, 3n, 'seq = 3')
+  t.equal(log.seq, 3n, 'seq = 3')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  await kill()
+  await umount()
+  ended = false
+  child = await mount(errCb)
+  t.pass('mount again ok')
+
+  log = new FsLog(`${DIR}/`, 'raft')
+  await log.open()
+  t.pass('open again ok')
+  t.equal(log.seq, 3n, 'seq = 3 again')
+  t.deepEqual(toObj(log.head), data, 'head = data again')
+
+  data = { ee: 5 }
+  seq = await log.append(toBuf(data))
+  t.equal(seq, 4n, 'seq = 4')
+  t.equal(log.seq, 4n, 'seq = 4')
+  t.deepEqual(toObj(log.head), data, 'head = data')
+
+  await log.close()
+  t.pass('close ok')
+  t.end()
+}
+
+test('raft SIGINT', (t) => testRaft(t, 'SIGINT'))
+test('raft SIGTERM', (t) => testRaft(t, 'SIGTERM'))
 
 test('reset', async (t) => {
   await reset()
