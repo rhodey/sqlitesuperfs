@@ -1,6 +1,6 @@
 {
   "name": "sqlitesuperfs",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "MIT",
   "scripts": {
     "reset": "$(fusermount -u testdir/ || true) && PGPASSWORD='psql' psql -h localhost -U psql -d psql -c 'drop schema if exists test1 cascade;'",
