@@ -1,5 +1,6 @@
 use log::debug;
 use log::error;
+use log::{info, log_enabled, Level};
 
 use std::fmt;
 use std::error::Error;
@@ -23,6 +24,8 @@ use libsodium_rs::crypto_secretbox::Nonce;
 
 use crate::fs::Inode;
 use crate::fs::Block;
+
+use std::{thread, time::Duration};
 
 pub struct PgDb {
   uid: u32,
@@ -90,7 +93,7 @@ fn get_block(row: &Row) -> Block {
     ino: get_u64(row, "ino"),
     num: get_u64(row, "num"),
     buf: row.get("buf"),
-    ino_sz: 0,
+    ino_sz: -1,
   }
 }
 
@@ -164,6 +167,11 @@ fn db_err(op: &str, err: PgPretty) -> c_int {
 // todo: stack
 fn db_panic(op: &str, err: PgPretty) -> c_int {
   panic!("db panic ({}) {}", op, err);
+}
+
+// simulate network
+fn do_sleep() {
+  if log_enabled!(Level::Info) { thread::sleep(Duration::from_micros(200)); }
 }
 
 const SCHEMA: &str = include_str!("../../schema.sql");
@@ -262,6 +270,8 @@ impl PgDb {
   }
 
   pub fn getattr(&mut self, ino: u64) -> Result<Option<Inode>, c_int> {
+    info!("getattr");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let query = format!("SELECT * FROM {}.inodes_and_links WHERE id = $1", &ns);
@@ -278,6 +288,8 @@ impl PgDb {
   }
 
   pub fn lookup(&mut self, parent: u64, name: &str) -> Result<Option<Inode>, c_int> {
+    info!("lookup");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let parent: i64 = parent.try_into().unwrap();
@@ -294,6 +306,8 @@ impl PgDb {
   }
 
   pub fn readdir(&mut self, ino: u64, offset: i64) -> Result<Vec<Inode>, c_int> {
+    info!("readdir");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let ino: i64 = ino.try_into().unwrap();
@@ -310,6 +324,8 @@ impl PgDb {
   }
 
   pub fn mknod(&mut self, parent: u64, name: &str, mode: u32, typee: u32, path: Option<&str>) -> Result<Inode, c_int> {
+    info!("mknod");
+    do_sleep();
     let uid = self.uid;
     let gid = self.gid;
     let ns = self.namespace.to_string();
@@ -349,6 +365,8 @@ impl PgDb {
   }
 
   pub fn setattr(&mut self, inode: Inode, end_block: u64) -> Result<Inode, c_int> {
+    info!("setattr");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let c: i64 = inode.create_ms.try_into().unwrap();
@@ -371,6 +389,8 @@ impl PgDb {
   }
 
   pub fn read(&mut self, ino: u64, start: u64, end: u64) -> Result<Vec<Block>, c_int> {
+    info!("read {}", ino);
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let ino: i64 = ino.try_into().unwrap();
@@ -393,6 +413,7 @@ impl PgDb {
   }
 
   pub fn write(&mut self, blocks: Vec<Block>, attr: Option<Inode>, end_block: u64) -> Result<Option<Inode>, c_int> {
+    info!("write");
     let blocks: Vec<Block> = blocks.into_iter().map(|mut block| {
       let encrypted = self.encrypt(block.buf);
       block.buf = encrypted;
@@ -401,6 +422,7 @@ impl PgDb {
 
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
+    do_sleep();
     let mut txn = match conn.transaction() {
       Err(e) => return Err(db_err("write", PgPretty(e))),
       Ok(txn) => txn,
@@ -418,6 +440,7 @@ impl PgDb {
       let f: i32 = attr.flags.try_into().unwrap();
       let id: i64 = attr.id.try_into().unwrap();
       let eb: i64 = end_block.try_into().unwrap();
+      do_sleep();
       let query = format!("SELECT * FROM {}.setattr($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", &ns);
       let row = match txn.query_one(&query, &[&id, &c, &m, &a, &sz, &mo, &u, &g, &f, &eb]) {
         Ok(row) => row,
@@ -430,8 +453,10 @@ impl PgDb {
     for block in blocks {
       let ino: i64 = block.ino.try_into().unwrap();
       let num: i64 = block.num.try_into().unwrap();
-      let ino_sz: i64 = block.ino_sz.try_into().unwrap();
+      let ino_sz: i64 = block.ino_sz;
       let buf = block.buf;
+      info!("write {} {}", ino, num);
+      do_sleep();
       let query = format!("SELECT {}.write($1, $2, $3, $4) AS ok", &ns);
       match txn.query_one(&query, &[&ino, &num, &buf, &ino_sz]) {
         Err(e) => return Err(db_panic("write", PgPretty(e))),
@@ -439,6 +464,7 @@ impl PgDb {
       };
     }
 
+    do_sleep();
     match txn.commit() {
       Err(e) => return Err(db_panic("write", PgPretty(e))),
       Ok(_) => {},
@@ -448,6 +474,8 @@ impl PgDb {
   }
 
   pub fn link(&mut self, ino: u64, new_parent: u64, new_name: &str) -> Result<Inode, c_int> {
+    info!("link");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let query = format!("SELECT * FROM {}.link($1, $2, $3)", &ns);
@@ -463,6 +491,8 @@ impl PgDb {
   }
 
   pub fn unlink(&mut self, parent: u64, name: &str) -> Result<Inode, c_int> {
+    info!("unlink");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let query = format!("SELECT * FROM {}.unlink($1, $2)", &ns);
@@ -477,6 +507,8 @@ impl PgDb {
   }
 
   pub fn rmdir(&mut self, parent: u64, name: &str) -> Result<Inode, c_int> {
+    info!("rmdir");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let query = format!("SELECT * FROM {}.rmdir($1, $2) AS err", &ns);
@@ -492,6 +524,8 @@ impl PgDb {
   }
 
   pub fn rename(&mut self, parent: u64, name: &str, new_parent: u64, new_name: &str) -> Result<Inode, c_int> {
+    info!("rename");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let query = format!("SELECT * FROM {}.rename($1, $2, $3, $4)", &ns);
@@ -506,6 +540,8 @@ impl PgDb {
   }
 
   pub fn del(&mut self, ino: u64) -> Result<(), c_int> {
+    info!("del");
+    do_sleep();
     let ns = self.namespace.to_string();
     let conn = self.get_conn()?;
     let query = format!("DELETE FROM {}.inodes WHERE id = $1", &ns);

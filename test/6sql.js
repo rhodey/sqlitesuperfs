@@ -152,6 +152,42 @@ test('sql big txn', (t) => {
   t.end()
 })
 
+test('sql two txn', (t) => {
+  empty(DIR)
+
+  const file = `${DIR}/test.db`
+  const db = Database(file)
+  db.pragma('journal_mode = TRUNCATE')
+  db.pragma('synchronous = FULL')
+  db.exec(table)
+
+  let users = new Array(200).fill(0)
+  users = users.map((z, idx) => {
+    const uname = `u${idx}`
+    const email = `e${idx}`
+    return { uname, email }
+  })
+
+  const stmt = db.prepare('insert into users (uname, email) values (@uname, @email)')
+  const insertMany = db.transaction((users) => {
+    for (const user of users) {
+      stmt.run(user)
+    }
+  })
+
+  for (let c = 0; c < 4; c += 2) {
+    const two = users.slice(c, c + 2)
+    insertMany(two)
+  }
+  t.pass(`insert ok`)
+
+  const row = db.prepare('select count(id) as c from users').get()
+  t.equal(row.c, 4, 'count ok')
+
+  db.close()
+  t.end()
+})
+
 test('sql many txn', (t) => {
   empty(DIR)
 
@@ -177,19 +213,21 @@ test('sql many txn', (t) => {
     }
   })
 
-  for (let i = 0; i < users.length; i += 2) {
-    const two = users.slice(i, i + 2)
-    insertMany(two)
+  let ms = 0
+  for (let i = 0; i < 10; i++) {
+    db.prepare('delete from users').run()
+    begin = Date.now()
+    for (let c = 0; c < users.length; c += 2) {
+      const two = users.slice(c, c + 2)
+      insertMany(two)
+    }
+    ms = Date.now() - begin
+    t.pass(`insert ok ${i}`)
+    t.pass(`insert ${i} ${ms}ms`)
   }
-  let ms = Date.now() - begin
-  t.pass('insert ok')
-  t.pass(`insert ${ms}ms`)
 
-  begin = Date.now()
   const row = db.prepare('select count(id) as c from users').get()
-  ms = Date.now() - begin
   t.equal(row.c, users.length, 'count ok')
-  t.pass(`count ${ms}ms`)
 
   db.close()
   t.end()

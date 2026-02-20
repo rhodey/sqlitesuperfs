@@ -6,6 +6,7 @@ pub mod fs;
 pub mod db;
 
 use clap::Arg;
+use clap::ArgAction;
 use std::path::Path;
 use libsodium_rs::{self, ensure_init};
 
@@ -26,6 +27,7 @@ fn main() {
         .arg(Arg::new("uid").short('u').value_parser(clap::value_parser!(u32)))
         .arg(Arg::new("gid").short('g').value_parser(clap::value_parser!(u32)))
         .arg(Arg::new("kernel_opts").short('o'))
+        .arg(Arg::new("pattern").long("pattern").short('p').action(ArgAction::Append).num_args(1))
         .get_matches();
 
   let namespace = matches.get_one::<String>("namespace").unwrap();
@@ -67,31 +69,41 @@ fn main() {
   let kernel_opts = format!("{},{},{}", u, g, kernel_opts);
   debug!("{} kernel_opts", kernel_opts);
 
-  if Path::new(&mount_dir).exists() {
-    let umount_cmd = format!("fusermount -u {}", mount_dir);
-    ctrlc::set_handler(move || {
-      println!("signal = unmount");
-      std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&umount_cmd)
-        .output()
-        .expect("error fusermount");
-      std::process::exit(0);
-    })
-    .expect("error signals");
+  let patterns: Vec<String> = matches
+    .get_many::<String>("pattern")
+    .map(|vals| vals.cloned().collect())
+    .unwrap_or_else(|| vec!["db-journal,db".to_string()]);
+  let patterns: Vec<Vec<String>> = patterns
+    .into_iter()
+    .map(|p| { p.split(',').map(|s| s.trim().to_string()).collect() })
+    .collect();
+  debug!("{:?} patterns", patterns);
 
-    let mut pgdb = db::PgDb::new(uid, gid, &psql_url, namespace, &enc_pass);
-    let block_szz = pgdb.init(sql_schema, block_sz).expect("error init_schema");
-
-    if block_sz != block_szz {
-      eprintln!("block size {} does not match db block size {}", block_sz, block_szz);
-      std::process::exit(1);
-    }
-
-    let fs = fs::Fs::new(uid, gid, block_sz, buffers, ttl, pgdb);
-    fs::mount(fs, mount_dir, &kernel_opts);
-  } else {
+  if Path::new(&mount_dir).exists() == false {
     error!("mount_dir {} does not exist", mount_dir);
     std::process::exit(1);
   }
+
+  let umount_cmd = format!("fusermount -u {}", mount_dir);
+  ctrlc::set_handler(move || {
+    println!("signal = unmount");
+    std::process::Command::new("sh")
+      .arg("-c")
+      .arg(&umount_cmd)
+      .output()
+      .expect("error fusermount");
+    std::process::exit(0);
+  })
+  .expect("error signals");
+
+  let mut pgdb = db::PgDb::new(uid, gid, &psql_url, namespace, &enc_pass);
+  let block_szz = pgdb.init(sql_schema, block_sz).expect("error init_schema");
+
+  if block_sz != block_szz {
+    eprintln!("block size {} does not match db block size {}", block_sz, block_szz);
+    std::process::exit(1);
+  }
+
+  let fs = fs::Fs::new(uid, gid, block_sz, buffers, ttl, patterns, pgdb);
+  fs::mount(fs, mount_dir, &kernel_opts);
 }

@@ -98,7 +98,7 @@ begin
   insert into :ns.blocks (ino, num, buf) values (i, n, b)
     on conflict (ino, num) do update
       set buf = b;
-  update :ns.inodes set size = sz where sz > 0 and id = i;
+  update :ns.inodes set size = sz where sz >= 0 and id = i;
   return 1;
 end;
 $$ language plpgsql;

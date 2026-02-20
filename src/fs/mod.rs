@@ -1,5 +1,4 @@
 use log::debug;
-// use log::info;
 
 use libc::c_int;
 use std::path::Path;
@@ -54,7 +53,7 @@ pub struct Block {
   pub ino: u64,
   pub num: u64,
   pub buf: Vec<u8>,
-  pub ino_sz: u64,
+  pub ino_sz: i64,
 }
 
 fn round_up(n: u64, unit: u64) -> u64 {
@@ -106,7 +105,7 @@ fn zero_pad(blocks: Vec<Block>, block_sz: u64, ino_sz: u64, first: u64) -> Vec<B
     let end = (start + block_sz).min(ino_sz as i64);
     let len = (end - start).max(0) as usize;
     if buf.len() < len { buf.resize(len, 0); }
-    out.push(Block { ino, num, buf, ino_sz: 0 });
+    out.push(Block { ino, num, buf, ino_sz: -1 });
   }
   out
 }
@@ -147,37 +146,53 @@ impl Inode {
 type Cache = HashMap<u64, Inode>;
 type Blocks = HashMap<u64, Block>;
 type BlockCache = HashMap<u64, Blocks>;
+type Names = Vec<Vec<String>>;
 
 #[allow(dead_code)]
 pub struct Fs {
   uid: libc::uid_t,
   gid: libc::gid_t,
-  block_sz: u64, buffers: u64, ttl: u64,
-  fhc: u64,
+  block_sz: u64,
+  buffer_bytes: u64,
+  ttl_ms: u64,
   fh_map: Cache,
-  fh_dmap: Cache,
+  fh_dir_map: Cache,
+  fh_next: u64,
   inodes: Cache,
-  dblocks: BlockCache,
-  jblocks: BlockCache,
+  names: Names,
+  buffers: BlockCache,
+  diffo: Blocks,
   pgdb: PgDb,
 }
 
 impl Fs {
-  pub fn new(uid: u32, gid: u32, block_sz: u64, buffers: u64, ttl: u64, pgdb: PgDb) -> Self {
+  pub fn new(uid: u32, gid: u32, block_sz: u64, buffers: u64, ttl: u64, names: Names, pgdb: PgDb) -> Self {
+    let buffer_bytes = 1024 * 1024 * buffers;
+    let ttl_ms = ttl * 1000;
     let fh_map: Cache = HashMap::new();
-    let fh_dmap: Cache = HashMap::new();
+    let fh_dir_map: Cache = HashMap::new();
     let inodes: Cache = HashMap::new();
-    let dblocks: BlockCache = HashMap::new();
-    let jblocks: BlockCache = HashMap::new();
-    let buffers = 1024 * 1024 * buffers;
-    let ttl = ttl * 1000;
+    let buffers: BlockCache = HashMap::new();
+    let diffo: Blocks = HashMap::new();
     Fs {
       uid, gid,
-      block_sz, buffers, ttl,
-      fhc: 0, fh_map, fh_dmap, inodes,
-      dblocks, jblocks,
-      pgdb,
+      block_sz, buffer_bytes, ttl_ms,
+      fh_map, fh_dir_map, fh_next: 0,
+      inodes, names, buffers, diffo, pgdb,
     }
+  }
+
+  fn get_name_group(&mut self, name: OsString) -> Option<Vec<String>> {
+    let name: String = name.into_string().unwrap_or_else(|_| "nothing.nothing".to_string());
+    let ext = name.split('.').last().unwrap_or("nothing");
+    for group in self.names.clone() {
+      for name in &group {
+        if name == ext {
+          return Some(group)
+        }
+      }
+    }
+    None
   }
 
   fn get_ino(&mut self, ino: u64) -> Result<Option<Inode>, c_int> {
@@ -195,8 +210,8 @@ impl Fs {
   }
 
   fn trunc_buffers(&mut self, ino: u64, size: u64) -> bool {
-    if self.buffers == 0 { return false }
-    let block_map = self.dblocks.get_mut(&ino).or_else(|| self.jblocks.get_mut(&ino));
+    if self.buffer_bytes == 0 { return false }
+    let block_map = self.buffers.get_mut(&ino);
     if block_map.is_none() { return false }
     let block_map = block_map.unwrap();
     let end = div_ceil(size, self.block_sz);
@@ -206,38 +221,44 @@ impl Fs {
     if let Some(last) = block_map.get_mut(&last) {
       last.buf.truncate(size as usize);
     }
+    let first = Block { ino, num: 0, buf: vec![], ino_sz: -1 };
+    block_map.entry(0).or_insert_with(|| first);
     return true;
   }
 
-  // todo: ?? can copy more efficiently
   fn read_buffers(&mut self, ino: u64, start: u64, end: u64, full: bool) -> Result<Vec<Block>, c_int> {
     if full {
+      // writing full blocks so no read
       return Ok(Vec::new());
-    } else if self.buffers == 0 {
+    } else if self.buffer_bytes == 0 || self.buffers.get(&ino).is_none() {
+      // buffers disabled
       match self.pgdb.read(ino, start, end) {
         Ok(blocks) => return Ok(blocks),
         Err(errno) => return Err(errno),
       };
     }
+
+    // copy
     let mut blocks: Vec<Block> = Vec::new();
-    let block_map = self.dblocks.get(&ino).or_else(|| self.jblocks.get(&ino));
-    if let Some(block_map) = block_map {
-      for num in start..end {
-        if let Some(block) = block_map.get(&num) {
-          blocks.push(block.clone());
-        }
+    let block_map = self.buffers.get(&ino).unwrap();
+    for num in start..end {
+      if let Some(block) = block_map.get(&num) {
+        blocks.push(block.clone());
       }
     }
+
     if blocks.len() >= ((end - start) as usize) { return Ok(blocks) }
+
+    // need more
     let also = match self.pgdb.read(ino, start, end) {
       Ok(blocks) => blocks,
       Err(errno) => return Err(errno),
     };
+
+    // copy
     let also: Blocks = also.into_iter().map(|block| (block.num, block)).collect();
     for num in start..end {
-      if let Some(block_map) = block_map {
-        if block_map.contains_key(&num) { continue }
-      }
+      if block_map.contains_key(&num) { continue }
       if let Some(also) = also.get(&num) {
         blocks.push(also.clone());
       }
@@ -245,83 +266,95 @@ impl Fs {
     Ok(blocks)
   }
 
-  // todo: ?? can copy more efficiently
-  fn sync_buffers(&mut self, ino: u64, db: bool, journal: bool) -> bool {
-    if self.buffers == 0 { return false }
+  fn sync_buffers(&mut self, ino: u64) -> bool {
+    // disabled
+    if self.buffer_bytes == 0 { return false }
     let ino1 = match self.get_ino(ino) {
       Ok(Some(inode)) => inode,
       Ok(None) => return false,
       Err(errno) => { panic!("(sync_buffers) (get_ino) {}", errno); },
     };
-    let single = db == false && journal == false;
-    let name;
-    if let Some(n) = ino1.name.to_str() {
-      if n.ends_with(".db") && (db || single) {
-        name = n;
-      } else if n.ends_with(".db-journal") && (journal || single) {
-        name = n;
+    let group1 = self.get_name_group(ino1.name.clone());
+    // no --pattern arg matches name
+    if group1.is_none() { return false }
+
+    let group1 = group1.unwrap();
+    let keys: Vec<u64> = self.buffers.keys().copied().collect();
+    let mut all: Vec<Inode> = Vec::new();
+
+    for ino in keys {
+      match self.get_ino(ino) {
+        Ok(Some(inode)) => all.push(inode),
+        Err(errno) => { panic!("(sync_buffers) (get_ino 2) {}", errno); },
+        _ => (),
+      };
+    }
+
+    // in same dir
+    let all: Vec<Inode> = all
+      .into_iter()
+      .filter(|ino2| ino2.parent == ino1.parent)
+      .collect();
+
+    // in same group
+    let all: Vec<Inode> = all
+      .into_iter()
+      .filter(|ino2| {
+        let name1: String = ino1.name.clone().into_string().unwrap_or_else(|_| "nothing.nothing".to_string());
+        let name1 = name1.split('.').next().unwrap_or("nothing");
+        let name2: String = ino2.name.clone().into_string().unwrap_or_else(|_| "nothing.nothing".to_string());
+        let ext2 = name2.split('.').last().unwrap_or("nothing");
+        let name2 = name2.split('.').next().unwrap_or("nothing");
+        group1.contains(&ext2.to_string()) && name1 == name2
+      })
+      .collect();
+
+    // copy blocks
+    let mut copy: Vec<Block> = Vec::new();
+    for ino in all {
+      let block_map = self.buffers.get_mut(&ino.id);
+      if block_map.is_none() { continue }
+      let block_map = block_map.unwrap();
+      let mut copyy: Vec<Block> = Vec::new();
+
+      if block_map.len() > 1 {
+        for block in block_map.values() {
+          copyy.push(block.clone());
+        }
+        if let Some(mut last) = copyy.pop() {
+          // last block sets size in db
+          last.ino_sz = ino.size.try_into().unwrap();
+          copyy.push(last);
+        }
       } else {
-        return false;
-      }
-    } else {
-      return false;
-    }
-
-    let mut blocks1: Vec<Block> = Vec::new();
-    let block_map = self.dblocks.get_mut(&ino).or_else(|| self.jblocks.get_mut(&ino));
-    if block_map.is_none() { return false }
-    let block_map = block_map.unwrap();
-    for block in block_map.values() { blocks1.push(block.clone()); }
-    if let Some(mut last) = blocks1.pop() {
-      last.ino_sz = ino1.size;
-      blocks1.push(last);
-    }
-
-    let keys = if name.ends_with(".db-journal") {
-      block_map.clear();
-      self.dblocks.keys()
-    } else {
-      block_map.retain(|&key, _| key == 0);
-      self.jblocks.keys()
-    };
-
-    let test = if name.ends_with(".db-journal") {
-      name.replace("-journal", "")
-    } else {
-      format!("{}-journal", name)
-    };
-
-    let mut i2: Option<u64> = None;
-    let mut blocks2: Vec<Block> = Vec::new();
-    if single == false {
-      for ino in keys {
-        let block_map = self.dblocks.get(&ino).or_else(|| self.jblocks.get(&ino)).unwrap();
-        if block_map.len() == 0 { continue }
-        if let Some(ino2) = self.inodes.get(ino) {
-          if ino2.parent != ino1.parent { continue }
-          if let Some(name2) = ino2.name.to_str() {
-            if test != name2 { continue }
-            i2 = Some(ino2.id);
-            for block in block_map.values() { blocks2.push(block.clone()); }
-            if let Some(mut last) = blocks2.pop() {
-              last.ino_sz = ino2.size;
-              blocks2.push(last);
+        // possibly nothing changed
+        if let Some(first) = block_map.get(&0) {
+          if let Some(prev) = self.diffo.get(&ino.id) {
+            if first.buf != prev.buf {
+              let mut first = first.clone();
+              first.ino_sz = ino.size.try_into().unwrap();
+              copyy.push(first);
             }
+          } else {
+            let mut first = first.clone();
+            first.ino_sz = ino.size.try_into().unwrap();
+            copyy.push(first);
           }
+        } else {
+          panic!("(sync_buffers) (0 None)");
         }
       }
+
+      copy.extend(copyy);
+      block_map.retain(|&key, _| key == 0);
+      let first = block_map.get(&0).unwrap();
+      self.diffo.insert(ino.id, first.clone());
     }
 
-    if let Some(i2) = i2 {
-      if name.ends_with(".db-journal") {
-        self.dblocks.get_mut(&i2).unwrap().retain(|&key, _| key == 0);
-      } else {
-        self.jblocks.get_mut(&i2).unwrap().clear();
-      }
-    }
+    // nothing changed
+    if copy.len() == 0 { return true }
 
-    let blocks = [blocks1, blocks2].concat();
-    match self.pgdb.write(blocks, None, 0) {
+    match self.pgdb.write(copy, None, 0) {
       Err(errno) => { panic!("(sync_buffers) (write) {}", errno); },
       Ok(_) => return true,
     };
@@ -335,7 +368,6 @@ impl Filesystem for Fs {
     Ok(())
   }
 
-  // fuse-rs never calls
   fn destroy(&mut self, _req: &Request) {
     debug!("destroy");
   }
@@ -359,7 +391,7 @@ impl Filesystem for Fs {
       Ok(None) => return reply.error(libc::ENOENT),
       Err(errno) => return reply.error(errno),
     };
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     reply.attr(&ttl, &inode.attr(self.block_sz));
   }
 
@@ -370,7 +402,7 @@ impl Filesystem for Fs {
       Ok(None) => return reply.error(libc::ENOENT),
       Err(errno) => return reply.error(errno),
     };
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
   }
@@ -384,15 +416,15 @@ impl Filesystem for Fs {
     };
     inode.open += 1;
     self.inodes.insert(ino, inode.clone());
-    self.fhc += 1;
-    let fh = self.fhc;
-    self.fh_dmap.insert(fh, inode);
+    self.fh_next += 1;
+    let fh = self.fh_next;
+    self.fh_dir_map.insert(fh, inode);
     reply.opened(fh, flags);
   }
 
   fn readdir(&mut self, _req: &Request, ino: u64, fh: u64, offset: i64, mut reply: ReplyDirectory) {
     if offset < 0 { return reply.error(libc::EINVAL) }
-    let _inode = match self.fh_dmap.get(&fh) {
+    let _inode = match self.fh_dir_map.get(&fh) {
       Some(inode) if inode.id == ino => inode,
       _ => return reply.error(libc::EBADF),
     };
@@ -443,7 +475,7 @@ impl Filesystem for Fs {
   }
 
   fn releasedir(&mut self, _req: &Request, ino: u64, fh: u64, _flags: u32, reply: ReplyEmpty) {
-    let _inode = match self.fh_dmap.get(&fh) {
+    let _inode = match self.fh_dir_map.get(&fh) {
       Some(inode) if inode.id == ino => inode,
       _ => return reply.error(libc::EBADF),
     };
@@ -454,7 +486,7 @@ impl Filesystem for Fs {
     };
     inode.open = inode.open.saturating_sub(1);
     self.inodes.insert(ino, inode.clone());
-    self.fh_dmap.remove(&fh);
+    self.fh_dir_map.remove(&fh);
     if inode.nlink > 0 || inode.open > 0 { return reply.ok(); }
     self.inodes.remove(&ino);
     match self.pgdb.del(ino) {
@@ -470,7 +502,7 @@ impl Filesystem for Fs {
       Err(errno) => return reply.error(errno),
     };
     self.inodes.insert(inode.id, inode.clone());
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
   }
@@ -488,22 +520,23 @@ impl Filesystem for Fs {
     }
     inode.open += 1;
     self.inodes.insert(ino, inode.clone());
-    self.fhc += 1;
-    let fh = self.fhc;
+    self.fh_next += 1;
+    let fh = self.fh_next;
     self.fh_map.insert(fh, inode.clone());
     if let Some(name) = inode.name.to_str() {
-      if self.buffers > 0 && name.ends_with(".db") {
-        self.dblocks.entry(ino).or_insert_with(|| HashMap::new());
-        let blocks = self.dblocks.get_mut(&ino).unwrap();
-        if blocks.contains_key(&0) { return reply.opened(fh, flags); }
+      if self.buffer_bytes > 0 && self.get_name_group(name.into()).is_some() {
+        self.buffers.entry(ino).or_insert_with(|| HashMap::new());
+        let blocks = self.buffers.get_mut(&ino).unwrap();
+        // always keep block 0 in buffers
+        if blocks.contains_key(&0) {
+          return reply.opened(fh, flags);
+        }
         let first = match self.pgdb.read(ino, 0, 1) {
           Ok(blocks) => blocks,
           Err(errno) => return reply.error(errno),
         };
-        let first = first.first().cloned().unwrap_or(Block { ino, num: 0, buf: vec![], ino_sz: 0 });
+        let first = first.first().cloned().unwrap_or(Block { ino, num: 0, buf: vec![], ino_sz: -1 });
         blocks.insert(0, first);
-      } else if self.buffers > 0 && name.ends_with(".db-journal") {
-        self.jblocks.entry(ino).or_insert_with(|| HashMap::new());
       }
     }
     reply.opened(fh, flags);
@@ -517,20 +550,19 @@ impl Filesystem for Fs {
     };
     inode.open += 1;
     self.inodes.insert(inode.id, inode.clone());
-    self.fhc += 1;
-    let fh = self.fhc;
+    self.fh_next += 1;
+    let fh = self.fh_next;
     self.fh_map.insert(fh, inode.clone());
     if let Some(name) = inode.name.to_str() {
-      if self.buffers > 0 && name.ends_with(".db") {
-        let first = Block { ino: inode.id, num: 0, buf: vec![], ino_sz: 0 };
+      if self.buffer_bytes > 0 && self.get_name_group(name.into()).is_some() {
+        // always keep block 0 in buffers
+        let first = Block { ino: inode.id, num: 0, buf: vec![], ino_sz: -1 };
         let mut blocks = HashMap::new();
         blocks.insert(0, first);
-        self.dblocks.insert(inode.id, blocks);
-      } else if self.buffers > 0 && name.ends_with(".db-journal") {
-        self.jblocks.insert(inode.id, HashMap::new());
+        self.buffers.insert(inode.id, blocks);
       }
     }
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.created(&ttl, &inode.attr(self.block_sz), gen, fh, flags);
   }
@@ -610,7 +642,9 @@ impl Filesystem for Fs {
       Ok(Some(inode)) => inode,
       _ => return reply.error(libc::EIO),
     };
+
     if data.is_empty() { return reply.written(0); }
+
     let offset = offset.max(0) as u64;
     let sz = data.len() as u64;
     let block_sz = self.block_sz;
@@ -619,14 +653,17 @@ impl Filesystem for Fs {
     let ino_sz = orig.size;
     let next_sz = orig.size.max(offset + sz);
 
-    // if writing full blocks then there is no need to read
+    // if writing full blocks then no need to read
     let full_blocks = offset == (start * block_sz) && (offset + sz) == (end * block_sz);
 
     // read from buffers and/or db
-    let mut blocks = match self.read_buffers(ino, start, end, full_blocks) {
-      Ok(blocks) => blocks,
-      Err(errno) => return reply.error(errno),
-    };
+    let mut blocks: Vec<Block> = Vec::new();
+    if start * block_sz < ino_sz {
+      blocks = match self.read_buffers(ino, start, end, full_blocks) {
+        Ok(blocks) => blocks,
+        Err(errno) => return reply.error(errno),
+      };
+    }
 
     // write
     blocks.sort_by_key(|block| block.num);
@@ -671,25 +708,28 @@ impl Filesystem for Fs {
       let block = &ready[off..end];
       let block = block.to_vec();
       off += block.len();
-      blocks.push(Block { ino, num: num, buf: block, ino_sz: 0 });
+      blocks.push(Block { ino, num: num, buf: block, ino_sz: -1 });
       num += 1;
     }
 
-    // to txn buffer
-    if self.buffers > 0 {
-      let s1: usize = self.dblocks.values().map(|map| map.len()).sum();
-      let s2: usize = self.jblocks.values().map(|map| map.len()).sum();
-      let mut size = ((s1 + s2) as u64) * self.block_sz;
-      if let Some(block_map) = self.dblocks.get_mut(&ino).or_else(|| self.jblocks.get_mut(&ino)) {
+    // buffers
+    if self.buffer_bytes > 0 {
+      let total: usize = self.buffers.values().map(|map| map.len()).sum();
+      let mut total = (total as u64) * self.block_sz;
+      if let Some(block_map) = self.buffers.get_mut(&ino) {
         for block in blocks {
           if block_map.insert(block.num, block).is_none() {
-            size += self.block_sz;
+            // was new entry
+            total += self.block_sz;
           }
         }
         orig.size = next_sz;
         self.inodes.insert(orig.id, orig);
-        if size <= self.buffers { return reply.written(sz as u32); }
-        if self.sync_buffers(ino, true, true) {
+        if total <= self.buffer_bytes {
+          // no sync
+          return reply.written(sz as u32);
+        } else if self.sync_buffers(ino) {
+          // sync
           return reply.written(sz as u32);
         } else {
           panic!("(write) (sync_buffers) false");
@@ -697,8 +737,9 @@ impl Filesystem for Fs {
       }
     }
 
+    // no buffers
     let mut last = blocks.pop().unwrap();
-    last.ino_sz = next_sz;
+    last.ino_sz = next_sz.try_into().unwrap();
     blocks.push(last);
 
     // to db
@@ -751,11 +792,20 @@ impl Filesystem for Fs {
       inode.flags = flags.unwrap();
     }
 
-    // is buffered
-    if size.is_some() && self.trunc_buffers(ino, inode.size) && inode.size > 0 {
+    let is_buffered = self.trunc_buffers(ino, inode.size);
+
+    if size == Some(0) && is_buffered {
+      // is buffer commit
+      self.sync_buffers(ino);
       orig.size = inode.size;
       self.inodes.insert(orig.id, orig.clone());
-      let ttl = to_ts(self.ttl);
+      let ttl = to_ts(self.ttl_ms);
+      return reply.attr(&ttl, &orig.attr(self.block_sz));
+    } else if size.is_some() && is_buffered && inode.size > 0 {
+      // is buffer size change
+      orig.size = inode.size;
+      self.inodes.insert(orig.id, orig.clone());
+      let ttl = to_ts(self.ttl_ms);
       return reply.attr(&ttl, &orig.attr(self.block_sz));
     }
 
@@ -763,13 +813,14 @@ impl Filesystem for Fs {
     let end_block = div_ceil(inode.size, block_sz);
 
     if size.is_none() || size == Some(orig.size) || (inode.size % block_sz) == 0 || inode.size > orig.size {
-      // is fast (normal)
+      // is common (fast)
       inode = match self.pgdb.setattr(inode, end_block) {
         Ok(inode) => inode,
         Err(errno) => return reply.error(errno),
       };
     } else {
-      // is slow (rare)
+      // is rare (slower)
+      // size < orig.size && not % block_sz && not buffered
       let last_block = end_block.saturating_sub(1);
       let last_len = inode.size.saturating_sub(last_block * block_sz) as u32;
       let blocks = match self.pgdb.read(ino, last_block, end_block) {
@@ -793,7 +844,7 @@ impl Filesystem for Fs {
 
     inode.open = orig.open;
     self.inodes.insert(inode.id, inode.clone());
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     reply.attr(&ttl, &inode.attr(self.block_sz));
   }
 
@@ -802,7 +853,7 @@ impl Filesystem for Fs {
       Some(inode) if inode.id == ino => true,
       _ => false,
     };
-    let dir = match self.fh_dmap.get(&fh) {
+    let dir = match self.fh_dir_map.get(&fh) {
       Some(inode) if inode.id == ino => true,
       _ => false,
     };
@@ -817,19 +868,11 @@ impl Filesystem for Fs {
       Some(inode) if inode.id == ino => ino,
       _ => return reply.error(libc::EBADF),
     };
-    if let Some(_block_map) = self.dblocks.get(&ino) {
-      if self.sync_buffers(ino, true, false) {
-        return reply.ok();
-      } else {
-        panic!("(fsync) (sync_buffers) false");
-      }
-    } else {
-      return reply.ok();
-    }
+    return reply.ok();
   }
 
   fn fsyncdir(&mut self, _req: &Request, ino: u64, fh: u64, _datasync: bool, reply: ReplyEmpty) {
-    let _inode = match self.fh_dmap.get(&fh) {
+    let _inode = match self.fh_dir_map.get(&fh) {
       Some(inode) if inode.id == ino => return reply.ok(),
       _ => return reply.error(libc::EBADF),
     };
@@ -848,11 +891,11 @@ impl Filesystem for Fs {
     inode.open = inode.open.saturating_sub(1);
     self.inodes.insert(ino, inode.clone());
     self.fh_map.remove(&fh);
-    if inode.open == 0 { self.sync_buffers(ino, false, false); }
+    if inode.open == 0 { self.sync_buffers(ino); }
     if inode.nlink > 0 || inode.open > 0 { return reply.ok(); }
     self.inodes.remove(&ino);
-    self.dblocks.remove(&ino);
-    self.jblocks.remove(&ino);
+    self.buffers.remove(&ino);
+    self.diffo.remove(&ino);
     match self.pgdb.del(ino) {
       Ok(_) => reply.ok(),
       Err(errno) => reply.error(errno),
@@ -875,8 +918,8 @@ impl Filesystem for Fs {
     self.inodes.insert(inode.id, inode.clone());
     if inode.nlink > 0 || inode.open > 0 { return reply.ok(); }
     self.inodes.remove(&inode.id);
-    self.dblocks.remove(&inode.id);
-    self.jblocks.remove(&inode.id);
+    self.buffers.remove(&inode.id);
+    self.diffo.remove(&inode.id);
     match self.pgdb.del(inode.id) {
       Ok(_) => reply.ok(),
       Err(errno) => reply.error(errno),
@@ -897,7 +940,7 @@ impl Filesystem for Fs {
     parent.nlink += 1;
     self.inodes.insert(inode.id, inode.clone());
     self.inodes.insert(parent.id, parent);
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
   }
@@ -945,7 +988,7 @@ impl Filesystem for Fs {
     };
     inode.open = orig.open;
     self.inodes.insert(ino, inode.clone());
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
   }
@@ -960,7 +1003,7 @@ impl Filesystem for Fs {
       Err(errno) => return reply.error(errno),
     };
     self.inodes.insert(inode.id, inode.clone());
-    let ttl = to_ts(self.ttl);
+    let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
   }
