@@ -7,12 +7,13 @@
     "mounttest": "export $(cat .env | xargs) && RUST_LOG=none,fuse=debug,sqlitesuperfs=info cargo run -- test1 $(pwd)/testdir",
     "mounttestq": "export $(cat .env | xargs) && RUST_LOG=none,sqlitesuperfs=info cargo run -- test1 $(pwd)/testdir",
     "mounttest0": "export $(cat .env | xargs) && RUST_LOG=none,fuse=debug,sqlitesuperfs=info cargo run -- --ttl 0 test1 $(pwd)/testdir",
-    "test": "tape test/1basic.js && tape test/2dir.js && tape test/3rw.js && tape test/4link.js && tape test/5misc.js && tape test/6sql.js",
-    "test-umount": "tape test/7umount.js"
+    "test": "tape test/1basic.js && tape test/2dir.js && tape test/3rw.js && tape test/4link.js && tape test/5misc.js && tape test/6sql.js && tape test/7raft.js",
+    "test-umount": "tape test/8umount.js"
   },
   "devDependencies": {
     "tape": "^5.9.0",
     "better-sqlite3": "^12.4.6",
+    "tinyraftplus": "^0.3.0",
     "split": "^1.0.1"
   }
 }
