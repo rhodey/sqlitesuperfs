@@ -41,7 +41,7 @@ jobs:
           mkdir -p ./testdir
           export psql_url=postgresql://psql:psql@localhost:5432/psql
           export encryption_pass=supersuper
-          RUST_LOG=info cargo run -- -o 'allow_other' --ttl 0 test1 $(pwd)/testdir &
+          cargo run -- -o 'allow_other' --ttl 0 test1 $(pwd)/testdir &
           sleep 5
           npm install
           npm run test
@@ -51,7 +51,7 @@ jobs:
         run: |
           export psql_url=postgresql://psql:psql@localhost:5432/psql
           export encryption_pass=supersuper
-          RUST_LOG=info cargo run -- -o 'allow_other' --ttl 180 test1 $(pwd)/testdir &
+          cargo run -- -o 'allow_other' --ttl 180 test1 $(pwd)/testdir &
           sleep 5
           npm run test
           umount $(pwd)/testdir
