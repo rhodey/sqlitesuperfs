@@ -1,5 +1,5 @@
 # SQLitesuperfs
-FUSE fs with PostgreSQL backend, block-level encryption, and optimizations for SQLite multi-tenancy.
+SQLite FUSE fs with PostgreSQL backend, block-level encryption, and optimizations for multi-tenancy.
 
 ## Why
 [Lock.host](https://github.com/rhodey/lock.host) allows apps to attest to their code and to encrypt comms with clients. Lock.host also allows apps to create persistent keys. SQLitesuperfs was created to allow apps to keep persistent state (SQLite) and to keep that state private. All existing open-source encrypted filesystems use AES which fundamentally is vulnerable to timing attacks. Timing attacks mean "do not run this in the cloud". [Libsodium](https://doc.libsodium.org/) is used and is not vulnerable to timing attacks.
@@ -66,17 +66,17 @@ The read thread pool described earlier will help and additionally a custom [VFS]
 + (Every encrypted filesystem is vulnerable to rollback)
 
 ## Also
-Multi-Host Same-Namespace is not really on the roadmap but it is possible. Most of what you want from Multi-Host is: 1. durability 2. horizontal scaling. 1 is covered by PSQL and 2, well, just use a bigger host (and keep code simple). Multi-Host Same-Namespace would be something like LiteFS with SQLite WAL mode where you have 1 primary and N (asynchronous) replicas. LiteFS is cool but it should be noted that LiteFS durability is weaker, COMMIT always returns before replicas replicate.
-
-## Also
-SQLitesuperfs optimizations can be applied to data structures like [tinyraftplus](https://github.com/rhodey/tinyraftplus) if they have a lockfile protocol similar to SQLite:
+SQLitesuperfs optimizations can be applied to data structures like [tinyraftplus](https://github.com/rhodey/tinyraftplus) if they have a lockfile protocol similar to SQLite. The first and second commands are equivalent. And the third command is what would be used to optimize SQLite and tinyraftplus at the same time:
 ```
 sqlitesuperfs super1 /tmp/super1
 sqlitesuperfs super1 /tmp/super1 --pattern db-journal,db
 sqlitesuperfs super1 /tmp/super1 --pattern db-journal,db --pattern lock,off,log
 ```
 
-The first and second commands are equivalent. And the third command is what would be used to optimize SQLite and tinyraftplus at the same time. One more doc [PRAGMA.md](PRAGMA.md) about SQLite `journal_mode` and `synchronous`.
+## Also
+Multi-Host Same-Namespace is not really on the roadmap but it is possible. Most of what you want from Multi-Host is: 1. durability 2. horizontal scaling. 1 is covered by PSQL and 2, well, just use a bigger host (and keep code simple). Multi-Host Same-Namespace would be something like LiteFS with SQLite WAL mode where you have 1 primary and N (asynchronous) replicas. LiteFS is cool but it should be noted that LiteFS durability is weaker, COMMIT always returns before replicas replicate.
+
+One more doc [PRAGMA.md](PRAGMA.md) about SQLite `journal_mode` and `synchronous`.
 
 ## License
 mike@rhodey.org
