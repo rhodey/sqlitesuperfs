@@ -55,7 +55,7 @@ SQLitesuperfs passes `make test` in the official SQLite source tree. So you can:
 + Run `make test` from the mount
 
 ## Performance
-When the PSQL server is localhost SQLite is 15% faster than native FS thanks to SQLitesuperfs buffering. When the PSQL server has 0.2ms simulated RTT latency SQLite is 2x to 3x slower than native FS. SQLitesuperfs is primarily about *private hosted SQLite impossible => possible*. SQLitesuperfs even at 100x would be an achievement compared to Fully Homomorphic Encryption being 100,000x to 1,000,000x.
+When the PSQL server is localhost SQLite is 15% faster than native FS thanks to SQLitesuperfs buffering. When the PSQL server has 0.2ms simulated RTT latency SQLite is 2x to 3x slower than native FS. SQLitesuperfs is primarily about *private hosted SQLite impossible => possible*. SQLitesuperfs even at 100x would be an achievement compared to Fully Homomorphic Encryption being 100,000x to 1,000,000x. Also remember SQLite on native FS is fast!
 
 The read thread pool described earlier will help and additionally a custom [VFS](https://sqlite.org/vfs.html) can be added to improve writes but TBH I am very happy already to build apps on this so I dont say I will be back here to add either *super* soon.
 
