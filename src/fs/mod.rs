@@ -3,6 +3,7 @@ use log::debug;
 use libc::c_int;
 use std::path::Path;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
@@ -147,6 +148,7 @@ type Cache = HashMap<u64, Inode>;
 type Blocks = HashMap<u64, Block>;
 type BlockCache = HashMap<u64, Blocks>;
 type Names = Vec<Vec<String>>;
+type Missing = HashSet<(u64, String)>;
 
 #[allow(dead_code)]
 pub struct Fs {
@@ -162,6 +164,7 @@ pub struct Fs {
   names: Names,
   buffers: BlockCache,
   diffo: Blocks,
+  missing: Missing,
   pgdb: PgDb,
 }
 
@@ -174,11 +177,12 @@ impl Fs {
     let inodes: Cache = HashMap::new();
     let buffers: BlockCache = HashMap::new();
     let diffo: Blocks = HashMap::new();
+    let missing: Missing = HashSet::new();
     Fs {
       uid, gid,
       block_sz, buffer_bytes, ttl_ms,
       fh_map, fh_dir_map, fh_next: 0,
-      inodes, names, buffers, diffo, pgdb,
+      inodes, names, buffers, diffo, missing, pgdb,
     }
   }
 
@@ -397,9 +401,17 @@ impl Filesystem for Fs {
 
   fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
     let name = b64_encode(name);
+    // cache for a common code path
+    if self.missing.contains(&(parent, name.clone())) {
+      reply.error(libc::ENOENT);
+      return
+    }
     let inode = match self.pgdb.lookup(parent, &name) {
       Ok(Some(inode)) => inode,
-      Ok(None) => return reply.error(libc::ENOENT),
+      Ok(None) => {
+        self.missing.insert((parent, name));
+        return reply.error(libc::ENOENT);
+      },
       Err(errno) => return reply.error(errno),
     };
     let ttl = to_ts(self.ttl_ms);
@@ -502,6 +514,7 @@ impl Filesystem for Fs {
       Err(errno) => return reply.error(errno),
     };
     self.inodes.insert(inode.id, inode.clone());
+    self.missing.remove(&(parent, name));
     let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
@@ -550,6 +563,7 @@ impl Filesystem for Fs {
     };
     inode.open += 1;
     self.inodes.insert(inode.id, inode.clone());
+    self.missing.remove(&(parent, name));
     self.fh_next += 1;
     let fh = self.fh_next;
     self.fh_map.insert(fh, inode.clone());
@@ -932,6 +946,7 @@ impl Filesystem for Fs {
       Ok(inode) => inode,
       Err(errno) => return reply.error(errno),
     };
+    self.missing.remove(&(parent, name));
     let mut parent = match self.get_ino(parent) {
       Ok(Some(inode)) => inode,
       Ok(None) => return reply.error(libc::EIO),
@@ -988,6 +1003,7 @@ impl Filesystem for Fs {
     };
     inode.open = orig.open;
     self.inodes.insert(ino, inode.clone());
+    self.missing.remove(&(new_parent, new_name));
     let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
@@ -1003,6 +1019,7 @@ impl Filesystem for Fs {
       Err(errno) => return reply.error(errno),
     };
     self.inodes.insert(inode.id, inode.clone());
+    self.missing.clear();
     let ttl = to_ts(self.ttl_ms);
     let gen = 0;
     reply.entry(&ttl, &inode.attr(self.block_sz), gen);
@@ -1056,6 +1073,7 @@ impl Filesystem for Fs {
     self.inodes.insert(inode.id, inode);
     self.inodes.insert(p1.id, p1);
     self.inodes.insert(p2.id, p2);
+    self.missing.remove(&(new_parent, new_name));
     reply.ok();
   }
 

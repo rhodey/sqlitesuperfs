@@ -152,7 +152,7 @@ test('sql big txn', (t) => {
   t.end()
 })
 
-test('sql two txn', (t) => {
+test('sql 2 txn', (t) => {
   empty(DIR)
 
   const file = `${DIR}/test.db`
@@ -188,7 +188,7 @@ test('sql two txn', (t) => {
   t.end()
 })
 
-test('sql many txn', (t) => {
+test('sql 10 txn', (t) => {
   empty(DIR)
 
   const file = `${DIR}/test.db`
@@ -214,6 +214,7 @@ test('sql many txn', (t) => {
   })
 
   let ms = 0
+  let avg = 0
   for (let i = 0; i < 10; i++) {
     db.prepare('delete from users').run()
     begin = Date.now()
@@ -222,9 +223,13 @@ test('sql many txn', (t) => {
       insertMany(two)
     }
     ms = Date.now() - begin
+    avg += ms
     t.pass(`insert ok ${i}`)
     t.pass(`insert ${i} ${ms}ms`)
   }
+
+  avg = (avg / 10).toFixed(0)
+  t.pass(`insert avg ${avg}ms`)
 
   const row = db.prepare('select count(id) as c from users').get()
   t.equal(row.c, users.length, 'count ok')
