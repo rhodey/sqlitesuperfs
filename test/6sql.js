@@ -152,7 +152,7 @@ test('sql big txn', (t) => {
   t.end()
 })
 
-test('sql two txn', (t) => {
+test('sql 2 txn', (t) => {
   empty(DIR)
 
   const file = `${DIR}/test.db`
@@ -188,7 +188,7 @@ test('sql two txn', (t) => {
   t.end()
 })
 
-test('sql many txn', (t) => {
+test('sql 10 txn', (t) => {
   empty(DIR)
 
   const file = `${DIR}/test.db`
